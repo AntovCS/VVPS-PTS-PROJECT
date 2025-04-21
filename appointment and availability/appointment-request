@@ -1,0 +1,95 @@
+def request_appointment(user):
+    conn = connect_db()
+    if not conn:
+        return
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        cursor.execute("SELECT id, username, location FROM repair_shops WHERE FIND_IN_SET(%s, specialization)", (user['car_brand'],))
+        shops = cursor.fetchall()
+        if not shops:
+            print("No compatible repair shops available.")
+            return
+
+        print("\nAvailable repair shops:")
+        for shop in shops:
+            print(f"ID: {shop['id']}, Name: {shop['username']}, Location: {shop['location']}")
+        shop_id = input("Enter shop ID: ").strip()
+
+        date_input = input("Enter date (YYYY-MM-DD, or press Enter for today): ").strip()
+        available_date = date.today() if not date_input else date.fromisoformat(date_input)
+
+        query = """
+        SELECT id, start_time, end_time
+        FROM shop_availability
+        WHERE shop_id = %s AND available_date = %s
+        """
+        cursor.execute(query, (shop_id, available_date))
+        available_slots = cursor.fetchall()
+
+        if not available_slots:
+            print("No available slots for this date.")
+            return
+
+        print("\nAvailable time slots:")
+        for slot in available_slots:
+            print(f"Slot ID: {slot['id']}, {slot['start_time']} - {slot['end_time']}")
+
+        slot_id = input("Enter slot ID: ").strip()
+        cursor.execute("SELECT start_time, end_time FROM shop_availability WHERE id = %s AND shop_id = %s", (slot_id, shop_id))
+        slot = cursor.fetchone()
+        if not slot:
+            print("Invalid slot ID.")
+            return
+
+        service_map = {
+            '1': 'oil_change', '2': 'water_pump', '3': 'belt_change',
+            '4': 'pulleys', '5': 'filter_change'
+        }
+        service = input("Select service (1: Oil Change, 2: Water Pump, 3: Belt, 4: Pulleys, 5: Filter): ").strip()
+        if service not in service_map:
+            print("Invalid service.")
+            return
+
+        time_input = input("Enter desired time (HH:MM): ").strip()
+        try:
+            requested_time_obj = datetime.strptime(time_input, "%H:%M").time()
+            requested_time = datetime.combine(available_date, requested_time_obj)
+        except ValueError:
+            print("Invalid time format. Please use HH:MM (e.g., 14:30).")
+            return
+
+        start_time = slot['start_time']
+        end_time = slot['end_time']
+        
+        if isinstance(start_time, str):
+            start_time = datetime.strptime(start_time, "%H:%M:%S").time()
+        elif isinstance(start_time, timedelta):
+            start_time = (datetime.min + start_time).time()
+            
+        if isinstance(end_time, str):
+            end_time = datetime.strptime(end_time, "%H:%M:%S").time()
+        elif isinstance(end_time, timedelta):
+            end_time = (datetime.min + end_time).time()
+
+        slot_start = datetime.combine(available_date, start_time)
+        slot_end = datetime.combine(available_date, end_time)
+        
+        if not (slot_start <= requested_time < slot_end):
+            print("Requested time is outside available slot.")
+            return
+
+        query = """
+        INSERT INTO appointment_requests (user_id, shop_id, service_type, requested_time, created_at)
+        VALUES (%s, %s, %s, %s, %s)
+        """
+        cursor.execute(query, (user['id'], shop_id, service_map[service], requested_time, datetime.now()))
+        conn.commit()
+        print("Appointment request submitted successfully!")
+    except mysql.connector.Error as err:
+        print(f"Database error: {err}")
+    except ValueError as ve:
+        print(f"Error: {ve}")
+    finally:
+        cursor.close()
+        conn.close()
